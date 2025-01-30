@@ -110,6 +110,7 @@ typedef struct
 #define maxCh 13 // max Channel -> US = 11, EU = 13, Japan = 14
 
 int curChannel = 1;
+MacAddr lastAddr = {};
 
 void sniffer(void *buf, wifi_promiscuous_pkt_type_t type)
 {                                                            // This is where packets end up after they get sniffed
@@ -153,30 +154,31 @@ void sniffer(void *buf, wifi_promiscuous_pkt_type_t type)
   // Serial.println("Original packet: " + packet);
   // Serial.println("Original debug: " + debug);
 
-  mac = macAddrToString(wh->sa);
-  mac.toUpperCase();
+  // mac = macAddrToString(wh->sa);
+  // mac.toUpperCase();
 
   //bssid?
   // Serial.println(String(wh->bssid.mac + 22, 6+2+6+16));
   // Serial.println(String((char*)fc, 16));
+  // Serial.println(macAddrToString(wh->bssid));
 
-  String realmac;
-  for (int i = 0; i < 5; i++)
-  {
-    realmac += String((wh->sa).mac[i], HEX);
-  }
-  // Serial.println(realmac);
+  // String realmac;
+  // for (int i = 0; i < 5; i++)
+  // {
+  //   realmac += String((wh->sa).mac[i], HEX);
+  // }
+  // // Serial.println(realmac);
 
-  if (mac.length() != 12)
-  {
-    Serial.println("Invalid MAC: " + mac);
-  }
+  // if (mac.length() != 12)
+  // {
+  //   Serial.println("Invalid MAC: " + mac);
+  // }
 
   // json.clear();
   // json["mac"] = mac;
   // json["rssi"] = ctl.rssi;
 
-  Serial.println("{\"mac\":\"" + String(mac) + "\"" + "," + "\"rssi\":" + ctl.rssi + "" + "}");
+  Serial.println("{\"mac\":\"" + macAddrToString(wh->sa) + "\"" + "," + "\"rssi\":" + ctl.rssi + "," + "\"bssid\":\"" + macAddrToString(wh->bssid) + "\"" + "}");
 
   // serializeJson(json, Serial);
   // Serial.println();
@@ -314,8 +316,8 @@ void loop()
   }
   esp_wifi_set_channel(curChannel, WIFI_SECOND_CHAN_NONE);
   delay(1000);
-  updatetime();
-  purge();
-  showpeople();
+  // updatetime();
+  // purge();
+  // showpeople();
   // curChannel++;
 }
