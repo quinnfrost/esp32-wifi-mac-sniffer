@@ -1,44 +1,42 @@
+// wifi promiscuous mode sniffer for Espressif ESP32 Dev Module/esp-wroom-32u
+// rough idea cames from https://www.hackster.io/p99will/esp32-wifi-mac-scanner-sniffer-promiscuous-4c12f4
 #include <WiFi.h>
 #include <Wire.h>
 
-#include <ArduinoJson.h>
-
 #include "esp_wifi.h"
 
-// macList structure
-// +-----------------+-----------------+-----------------+-----------------+
-// | Column 1        | Column 2        | Column 3        | Column 4        |
-// +-----------------+-----------------+-----------------+-----------------+
-// | MAC Address     | TTL             | online time     | BSSID           |
-// +-----------------+-----------------+-----------------+-----------------+
-String maclist[64][4];
-int listcount = 0;
+// #define USE_JSON_LIB
+
+#define FILTER_LIST_MAX_SIZE 2
+#define FILTER_ENABLED true
+#define CHANNEL 1
+#define HOP_CHANNEL false
+#define MAX_CHANNEL 13 // max Channel -> US = 11, EU = 13, Japan = 14
+
+#ifdef USE_JSON_LIB
+#include <ArduinoJson.h>
 JsonDocument json;
+#endif
 
-String KnownMac[10][2] = { // Put devices you want to be reconized
-    {"Will-Phone", "EC1F7ffffffD"},
-    {"Will-PC", "E894Fffffff3"},
-    {"NAME", "MACADDRESS"},
-    {"NAME", "MACADDRESS"},
-    {"NAME", "MACADDRESS"},
-    {"NAME", "MACADDRESS"},
-    {"NAME", "MACADDRESS"},
-    {"NAME", "MACADDRESS"},
-    {"NAME", "MACADDRESS"}
-
-};
-
-String defaultTTL = "60"; // Maximum time (Apx seconds) elapsed before device is consirded offline
+String BssidFilter[FILTER_LIST_MAX_SIZE] = {
+    "000000000000",
+    "000000000000"};
 
 // filter only for management and data frames
 const wifi_promiscuous_filter_t filt = {
     .filter_mask = WIFI_PROMIS_FILTER_MASK_MGMT | WIFI_PROMIS_FILTER_MASK_DATA};
 
 typedef struct
-{ // or this
+{
   uint8_t mac[6];
 } __attribute__((packed)) MacAddr;
 
+/**
+ * Converts uint8 array to literal string
+ * a uint8 is 2 char for hex value, when a mac address contains 0, it may gets ignored
+ * e.g. 12-34-01-00-56-78 results in 12-34-1-0-56-78, or 1234105678
+ * which will be undistinguishable
+ */
 String macAddrToString(MacAddr addr)
 {
   String str = "";
@@ -50,18 +48,6 @@ String macAddrToString(MacAddr addr)
     {
       seg = "0" + seg;
     }
-    str += seg;
-  }
-  return str;
-}
-
-String macAddrToPlainString(MacAddr addr)
-{
-  String str = "";
-  String seg = "";
-  for (int i = 0; i < 6; i++)
-  {
-    seg = String((char)addr.mac[i]);
     str += seg;
   }
   return str;
@@ -90,8 +76,9 @@ typedef struct
   MacAddr bssid;
   int16_t seqctl;
   unsigned char payload[];
-} __attribute__((packed)) WifiMgmtHdr;
+} __attribute__((packed)) WifiPayload;
 
+// a fancier way to mark bit fields
 typedef struct
 {
   unsigned protocol : 2;
@@ -107,217 +94,85 @@ typedef struct
   unsigned order : 1;
 } __attribute__((packed)) WifiFrameCtl;
 
-#define maxCh 13 // max Channel -> US = 11, EU = 13, Japan = 14
-
-int curChannel = 1;
-MacAddr lastAddr = {};
-
+int curChannel = CHANNEL;
+int lastRssi = 0;
+String lastMac = "000000000000";
 void sniffer(void *buf, wifi_promiscuous_pkt_type_t type)
-{                                                            // This is where packets end up after they get sniffed
-  wifi_promiscuous_pkt_t *p = (wifi_promiscuous_pkt_t *)buf; // Dont know what these 3 lines do
-  wifi_pkt_rx_ctrl_t ctl = p->rx_ctrl;
-  int len = p->rx_ctrl.sig_len;
-  WifiMgmtHdr *wh = (WifiMgmtHdr *)p->payload;
-  len -= sizeof(WifiMgmtHdr);
+{
+  wifi_promiscuous_pkt_t *p = (wifi_promiscuous_pkt_t *)buf;
+  // metadata header
+  wifi_pkt_rx_ctrl_t rx_ctl = p->rx_ctrl;
+  int len = rx_ctl.sig_len;
+  // 802.11 packet head & data
+  WifiPayload *wh = (WifiPayload *)p->payload;
+  len -= sizeof(WifiPayload);
   if (len < 0)
   {
-    Serial.println("Receuved 0");
+    Serial.println("Received 0 payload");
     return;
   }
-  String packet;
-  String mac;
-  String debug;
+  // big endian for network, small for data in memory
   int fctl = ntohs(wh->fctl);
   WifiFrameCtl *fc = (WifiFrameCtl *)&fctl;
-  
 
-  //! Following code works, but a structured package data should be used for more info
-  // for (int i = 10; i <= 10 + 6 + 1; i++)
-  // { // This reads the first couple of bytes of the packet. This is where you can read the whole packet replaceing the "8+6+1" with "p->rx_ctrl.sig_len"
-  //   String currentSeg = String((wh->sa).mac[i], HEX);
-  //   // when coverting 1 byte (8bits, 2 hex letter) value to string, values with 4+ preceding zeros might get ignored
-  //   // which will cause missing digit in mac addr
-  //   if (currentSeg.length() == 1)
-  //   {
-  //     currentSeg = "0" + currentSeg;
-  //   } else if (currentSeg.length() == 0)
-  //   {
-  //     currentSeg = "00";
-  //   }
+  String mac = macAddrToString(wh->sa);
+  String bssid = macAddrToString(wh->bssid);
 
-  //   packet += currentSeg;
-  // }
-  // for (int i = 0; i <= 11; i++)
-  // { // This removes the 'nibble' bits from the stat and end of the data we want. So we only get the mac address.
-  //   mac += packet[i];
-  // }
-  // Serial.println("Original packet: " + packet);
-  // Serial.println("Original debug: " + debug);
-
-  // mac = macAddrToString(wh->sa);
-  // mac.toUpperCase();
-
-  //bssid?
-  // Serial.println(String(wh->bssid.mac + 22, 6+2+6+16));
-  // Serial.println(String((char*)fc, 16));
-  // Serial.println(macAddrToString(wh->bssid));
-
-  // String realmac;
-  // for (int i = 0; i < 5; i++)
-  // {
-  //   realmac += String((wh->sa).mac[i], HEX);
-  // }
-  // // Serial.println(realmac);
-
-  // if (mac.length() != 12)
-  // {
-  //   Serial.println("Invalid MAC: " + mac);
-  // }
-
-  // json.clear();
-  // json["mac"] = mac;
-  // json["rssi"] = ctl.rssi;
-
-  Serial.println("{\"mac\":\"" + macAddrToString(wh->sa) + "\"" + "," + "\"rssi\":" + ctl.rssi + "," + "\"bssid\":\"" + macAddrToString(wh->bssid) + "\"" + "}");
-
-  // serializeJson(json, Serial);
-  // Serial.println();
-
-  // int added = 0;
-  // for (int i = 0; i <= 63; i++)
-  // { // checks if the MAC address has been added before
-  //   if (mac == maclist[i][0])
-  //   {
-  //     maclist[i][1] = defaultTTL;
-  //     if (maclist[i][2] == "OFFLINE")
-  //     {
-  //       maclist[i][2] = "0";
-  //     }
-  //     added = 1;
-  //   }
-  // }
-
-  // if (added == 0)
-  // { // If its new. add it to the array.
-  //   maclist[listcount][0] = mac;
-  //   maclist[listcount][1] = defaultTTL;
-  //   // Serial.println(mac);
-  //   listcount++;
-  //   if (listcount >= 64)
-  //   {
-  //     Serial.println("Too many addresses");
-  //     listcount = 0;
-  //   }
-  // }
+  // simple output filter
+  // show only desired bssid, remove item for same mac
+  for (size_t i = 0; i < FILTER_LIST_MAX_SIZE; i++)
+  {
+    if (!FILTER_ENABLED || bssid == BssidFilter[i])
+    {
+      if (lastMac != mac || abs(lastRssi - rx_ctl.rssi) > 1)
+      {
+#ifdef USE_JSON_LIB
+        json["mac"] = mac;
+        json["rssi"] = rx_ctl.rssi;
+        json["bssid"] = bssid;
+        serializeJson(json, Serial);
+        Serial.println();
+#else
+        Serial.println(" {\"mac\":\"" + mac + "\"" + "," + "\"rssi\":" + rx_ctl.rssi + "," + "\"bssid\":\"" + bssid + "\"" + "}");
+#endif
+      }
+      lastMac = mac;
+      lastRssi = rx_ctl.rssi;
+      break;
+    }
+  }
 }
 
-//===== SETUP =====//
 void setup()
 {
-
   /* start Serial */
   Serial.begin(115200);
 
   /* setup wifi */
   wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-  Serial.println("Init: " + String(esp_wifi_init(&cfg)));
-  Serial.println("Set storage: " + String(esp_wifi_set_storage(WIFI_STORAGE_RAM)));
-  Serial.println("Set mode: " + String(esp_wifi_set_mode(WIFI_MODE_NULL)));
-  Serial.println("Start: " + String(esp_wifi_start()));
-  Serial.println("Set promiscuous: " + String(esp_wifi_set_promiscuous(true)));
-  Serial.println("Set filter: " + String(esp_wifi_set_promiscuous_filter(&filt)));
-  Serial.println("Set rx callback: " + String(esp_wifi_set_promiscuous_rx_cb(&sniffer)));
-  Serial.println("Set channel: " + String(esp_wifi_set_channel(curChannel, WIFI_SECOND_CHAN_NONE)));
+  esp_wifi_init(&cfg);
+  esp_wifi_set_storage(WIFI_STORAGE_RAM);
+  esp_wifi_set_mode(WIFI_MODE_NULL);
+  esp_wifi_start();
+  esp_wifi_set_promiscuous(true);
+  esp_wifi_set_promiscuous_filter(&filt);
+  esp_wifi_set_promiscuous_rx_cb(&sniffer);
+  esp_wifi_set_channel(curChannel, WIFI_SECOND_CHAN_NONE);
 
   Serial.setDebugOutput(false);
   Serial.println("starting!");
 }
 
-void purge()
-{ // This maanges the TTL
-  for (int i = 0; i <= 63; i++)
-  {
-    if (!(maclist[i][0] == ""))
-    {
-      int ttl = (maclist[i][1].toInt());
-      ttl--;
-      if (ttl <= 0)
-      {
-        // Serial.println("OFFLINE: " + maclist[i][0]);
-        // maclist[i][2] = "OFFLINE";
-        maclist[i][2] = -1;
-        maclist[i][1] = defaultTTL;
-      }
-      else
-      {
-        maclist[i][1] = String(ttl);
-      }
-    }
-  }
-}
-
-void updatetime()
-{ // This updates the time the device has been online fo
-
-  for (int i = 0; i <= 63; i++)
-  {
-    if (!(maclist[i][0] == ""))
-    {
-      if (maclist[i][2] == "")
-        maclist[i][2] = "0";
-      // if (!(maclist[i][2] == "OFFLINE"))
-      // {
-        int timehere = (maclist[i][2].toInt());
-        timehere++;
-        maclist[i][2] = String(timehere);
-      // }
-
-      // Serial.println(maclist[i][0] + " : " + maclist[i][2]);
-      // Serial.println("");
-      // Serial.println(
-      //     String(maclist[i][0].charAt(0)) + String(maclist[i][0].charAt(1)) + "-" + String(maclist[i][0].charAt(2)) + String(maclist[i][0].charAt(3)) + "-" + String(maclist[i][0].charAt(4)) + String(maclist[i][0].charAt(5)) + "-" + String(maclist[i][0].charAt(6)) + String(maclist[i][0].charAt(7)) + "-" + String(maclist[i][0].charAt(8)) + String(maclist[i][0].charAt(9)) + "-" + String(maclist[i][0].charAt(10)) + String(maclist[i][0].charAt(11)) + "(" + String(maclist[i][2]) + ")");
-      // json["mac"][i] = maclist[i][0];
-      // json["time"][i] = maclist[i][2].toInt();
-    }
-  }
-
-  // serializeJson(json, Serial);
-  // Serial.println();
-}
-
-void showpeople()
-{ // This checks if the MAC is in the reckonized list and then displays it on the OLED and/or prints it to serial.
-  String forScreen = "";
-  for (int i = 0; i <= 63; i++)
-  {
-    String tmp1 = maclist[i][0];
-    if (!(tmp1 == ""))
-    {
-      for (int j = 0; j <= 9; j++)
-      {
-        String tmp2 = KnownMac[j][1];
-        if (tmp1 == tmp2)
-        {
-          forScreen += (KnownMac[j][0] + " : " + maclist[i][2] + "\n");
-          Serial.print(KnownMac[j][0] + " : " + tmp1 + " : " + maclist[i][2] + "\n -- \n");
-        }
-      }
-    }
-  }
-}
-
-//===== LOOP =====//
 void loop()
 {
-  // Serial.println("Changed channel:" + String(curChannel));
-  if (curChannel > maxCh)
-  {
-    curChannel = 1;
-  }
   esp_wifi_set_channel(curChannel, WIFI_SECOND_CHAN_NONE);
   delay(1000);
-  // updatetime();
-  // purge();
-  // showpeople();
-  // curChannel++;
+  if (HOP_CHANNEL)
+  {
+    curChannel++;
+    if (curChannel > MAX_CHANNEL)
+    {
+      curChannel = 1;
+    }
+  }
 }
