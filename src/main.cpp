@@ -8,6 +8,8 @@
 // #define USE_JSON_LIB
 
 #define FILTER_LIST_MAX_SIZE 2
+#define FILTER_AUTO_HOP_CHANNEL true
+#define FILTER_LOW_PACKAGE_COUNT_THRESHOLD 2
 #define FILTER_ENABLED true
 #define CHANNEL 1
 #define HOP_CHANNEL false
@@ -15,6 +17,7 @@
 
 #ifdef USE_JSON_LIB
 #include <ArduinoJson.h>
+#include "Arduino.h"
 JsonDocument json;
 #endif
 
@@ -97,6 +100,7 @@ typedef struct
 int curChannel = CHANNEL;
 int lastRssi = 0;
 String lastMac = "000000000000";
+int lastSecondSniffedPackets = 0;
 void sniffer(void *buf, wifi_promiscuous_pkt_type_t type)
 {
   wifi_promiscuous_pkt_t *p = (wifi_promiscuous_pkt_t *)buf;
@@ -133,11 +137,13 @@ void sniffer(void *buf, wifi_promiscuous_pkt_type_t type)
         serializeJson(json, Serial);
         Serial.println();
 #else
+        Serial.print(" ");
         Serial.println(" {\"mac\":\"" + mac + "\"" + "," + "\"rssi\":" + rx_ctl.rssi + "," + "\"bssid\":\"" + bssid + "\"" + "}");
 #endif
       }
       lastMac = mac;
       lastRssi = rx_ctl.rssi;
+      lastSecondSniffedPackets++;
       break;
     }
   }
@@ -165,14 +171,26 @@ void setup()
 
 void loop()
 {
-  esp_wifi_set_channel(curChannel, WIFI_SECOND_CHAN_NONE);
   delay(1000);
   if (HOP_CHANNEL)
   {
-    curChannel++;
-    if (curChannel > MAX_CHANNEL)
-    {
-      curChannel = 1;
-    }
+    hopChannel();
   }
+  else if (FILTER_ENABLED && FILTER_AUTO_HOP_CHANNEL && lastSecondSniffedPackets <= FILTER_LOW_PACKAGE_COUNT_THRESHOLD)
+  {
+    hopChannel();
+  }
+
+  lastSecondSniffedPackets = 0;
+}
+
+void hopChannel()
+{
+  curChannel++;
+  if (curChannel > MAX_CHANNEL)
+  {
+    curChannel = 1;
+  }
+  Serial.println("Hopping to channel: " + String(curChannel));
+  esp_wifi_set_channel(curChannel, WIFI_SECOND_CHAN_NONE);
 }
